@@ -1,0 +1,23 @@
+{
+  "name": "hellcat",
+  "version": "0.0.1",
+  "main": "index.js",
+  "type": "module",
+  "license": "MIT",
+  "author": {
+    "name": "Ellyo Freitas",
+    "url": "https://github.com/ellyofreitas"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ellyofreitas/hellcat"
+  },
+  "bugs": {
+    "url": "https://github.com/ellyofreitas/hellcat/issues"
+  },
+  "homepage": "https://github.com/ellyofreitas/hellcat#readme",
+  "keywords": [],
+  "engines": {
+    "node": ">= 14"
+  }
+}
