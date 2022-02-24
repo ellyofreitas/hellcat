@@ -32,4 +32,4 @@ jobs:
       - name: "Publish"
         run: yarn publish --tag $RELEASE_TARGET_BRANCH
         env:
-          RELEASE_TARGET_BRANCH: ${{ github.event.release.target_commitish }}
+          RELEASE_TARGET_BRANCH: latest
