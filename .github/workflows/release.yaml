@@ -3,7 +3,7 @@ on:
   release:
     types: [created]
 jobs:
-  build:
+  publish:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -13,7 +13,6 @@ jobs:
       - uses: actions/setup-node@v2
         with:
           node-version: "14.x"
-          registry-url: "https://npm.pkg.github.com"
 
       - name: "Build"
         run: |
@@ -24,8 +23,13 @@ jobs:
         env:
           RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
 
+      - name: "Setup npm token"
+        run: |
+          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > .npmrc
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
       - name: "Publish"
         run: yarn publish --tag $RELEASE_TARGET_BRANCH
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TARGET_BRANCH: ${{ github.event.release.target_commitish }}
