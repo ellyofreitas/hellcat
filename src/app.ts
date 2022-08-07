@@ -1,3 +1,4 @@
+import { IncomingMessage, ServerResponse } from 'node:http';
 import { HttpRequest, HttpResponse } from './http';
 import {
   concatPaths,
@@ -6,29 +7,24 @@ import {
   StackHandler,
   StackLayer,
 } from './router';
-import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { EventEmitter } from 'events';
+import { getRequestBody } from './utils/get-request-body';
+
+export namespace App {
+  export interface Options {
+    router?: Router;
+    prefix?: string;
+  }
+
+  export interface Listener {
+    (req: IncomingMessage, res: ServerResponse): void;
+  }
+}
 
 export class App {
   private router: Router;
 
-  private bootstrapped: boolean = false;
-
-  private eventEmitter: EventEmitter;
-
-  constructor(options?: { router?: Router; prefix?: string }) {
+  constructor(options?: App.Options) {
     this.router = options?.router ?? new Router(options?.prefix);
-    this.eventEmitter = new EventEmitter({ captureRejections: true });
-  }
-
-  on(eventName: string | symbol, listener: (...args: any[]) => void) {
-    this.eventEmitter.on(eventName, listener);
-    return this;
-  }
-
-  private async executeEvent(eventName: string | symbol, ...args: any[]) {
-    const listeners = this.eventEmitter.listeners(eventName);
-    for (const listener of listeners) await listener(...args);
   }
 
   use(arg: StackHandler | StackLayer | Router) {
@@ -45,17 +41,20 @@ export class App {
     return this;
   }
 
-  async bootstrap() {
-    if (this.bootstrapped) return;
-    await this.executeEvent('bootstrap', this);
-    this.bootstrapped = true;
-    return this;
-  }
-
-  async handle(request: HttpRequest) {
+  async handle(input: {
+    path: string;
+    method: string;
+    headers: any;
+    body: Buffer | string | null;
+  }) {
     try {
-      const route = this.router.match(request.method, request.path);
-      request.setPathParams(route.params);
+      const route = this.router.match(input.method, input.path);
+      const request = new HttpRequest({
+        path: input.path,
+        method: input.method,
+        headers: input.headers,
+        body: input.body,
+      });
       for (const layer of route.stack) {
         const res = await layer.handle(request, this);
         if (res && res instanceof HttpResponse) return res;
@@ -69,27 +68,46 @@ export class App {
 
   parseError(error: Error | unknown): HttpResponse {
     if (error instanceof NotFoundError) return HttpResponse.notFound();
-    if (error instanceof HttpResponse) return error;
     console.error(error);
     return HttpResponse.serverError();
   }
 }
 
-export type AppHandler = (
-  event: APIGatewayProxyEvent
-) => Promise<APIGatewayProxyResult>;
-
-export default function makeHandler(options?: {
-  router?: Router;
-  prefix?: string;
-}): App & AppHandler {
-  const app = new App(options);
-  const handler: AppHandler = async (event) => {
-    await app.bootstrap();
-    const request = new HttpRequest(event);
-    const response = await app.handle(request);
-    return response.toJSON();
+const createListener = (app: App) => {
+  return async (req: IncomingMessage, res: ServerResponse) => {
+    try {
+      const url = new URL(req.url ?? '/', 'http://localhost');
+      const result = await app.handle({
+        path: url.pathname,
+        method: req.method ?? 'GET',
+        headers: req.headers,
+        body: await getRequestBody(req),
+      });
+      const response = result.toJSON();
+      res.writeHead(response.statusCode, response.headers);
+      res.end(response.body);
+    } catch (error) {
+      const parsedError = app.parseError(error);
+      res.writeHead(parsedError.statusCode, parsedError.headers);
+      res.end(JSON.stringify(parsedError.body));
+    } finally {
+      if (res.socket) res.end();
+    }
   };
-  Reflect.setPrototypeOf(handler, app);
-  return Object.assign(handler, app);
+};
+
+const decorateHandler = (handler: App.Listener): App.Listener => {
+  for (const key of Reflect.ownKeys(App.prototype)) {
+    const descriptor = Reflect.getOwnPropertyDescriptor(App.prototype, key);
+    if (descriptor && typeof descriptor.value === 'function')
+      Reflect.defineProperty(handler, key, descriptor);
+  }
+  return handler;
+};
+
+export default function (options: App | App.Options): App & App.Listener {
+  const app = options instanceof App ? options : new App(options);
+  const listener = createListener(app);
+  decorateHandler(listener);
+  return Object.assign(listener, app);
 }

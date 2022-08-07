@@ -1,4 +1,4 @@
-import { METHODS } from 'http';
+import { METHODS } from 'node:http';
 import { NotFoundError } from './exceptions';
 import { Handler } from './handler';
 import { Layer, StackLayer } from './layer';
