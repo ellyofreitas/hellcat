@@ -1,8 +1,24 @@
-import zlib from 'zlib';
-import { APIGatewayProxyEvent } from 'aws-lambda';
+import zlib from 'node:zlib';
+import { IncomingMessage } from 'node:http';
+import { APIGatewayProxyEvent, ALBEvent } from 'aws-lambda';
 import { HttpResponse } from './http-response';
 import { HttpHeaders } from './types';
 import { parseHeaders } from './util';
+import { getRequestBody } from '../utils/get-request-body';
+
+export namespace HttpRequest {
+  export interface Input {
+    path: string;
+
+    method: string;
+
+    params?: Record<string, string | undefined>;
+
+    body: Buffer | string | null;
+
+    headers: Record<string, string | undefined>;
+  }
+}
 
 export class HttpRequest {
   path: string;
@@ -11,38 +27,41 @@ export class HttpRequest {
 
   params: Record<string, string | undefined> = {};
 
-  body: Buffer;
+  body: Buffer | string | null;
 
   payload: Record<any, any> | null;
 
   headers: HttpHeaders;
 
-  raw: APIGatewayProxyEvent;
+  raw: any;
 
-  constructor(event: APIGatewayProxyEvent) {
-    this.raw = event;
-    this.path = event.path;
-    this.method = event.httpMethod.toLowerCase();
-    this.headers = parseHeaders(event.headers);
-    this.body = Buffer.from(
-      event.body ?? '',
-      event.isBase64Encoded ? 'base64' : this.charsetEncoding
-    );
-    if (event.pathParameters) this.params = event.pathParameters;
+  constructor(input: HttpRequest.Input, raw?: any) {
+    this.path = input.path;
+    this.method = input.method.toLowerCase();
+    this.headers = parseHeaders(input.headers);
+    this.body = input.body;
+    if (input.params) this.params = input.params;
     if (this.contentEncoding) this.body = this.decodePayload();
     this.payload = this.parsePayload();
+    this.raw = raw;
   }
 
   get isJSON() {
-    return this.contentType?.includes('application/json') ?? false;
+    return (
+      (!!this.body && this.contentType?.includes('application/json')) ?? false
+    );
+  }
+
+  get acceptEncoding() {
+    return this.getHeader('accept-encoding');
   }
 
   get isGzip() {
-    return this.contentEncoding?.includes('gzip') ?? false;
+    return (!!this.body && this.contentEncoding?.includes('gzip')) ?? false;
   }
 
   get isBrotli() {
-    return this.contentEncoding?.includes('br') ?? false;
+    return (!!this.body && this.contentEncoding?.includes('br')) ?? false;
   }
 
   get contentType() {
@@ -60,8 +79,21 @@ export class HttpRequest {
     return (res?.groups?.encoding ?? 'utf-8') as BufferEncoding;
   }
 
+  get isServer() {
+    return !!this.raw?.socket;
+  }
+
+  get isAPIGateway() {
+    return !!this.raw?.requestContext?.apiId;
+  }
+
+  get isALB() {
+    return !!this.raw?.requestContext?.elb?.targetGroupArn;
+  }
+
   private parsePayload() {
     try {
+      if (!this.body) return this.body;
       return this.isJSON
         ? JSON.parse(this.body.toString(this.charsetEncoding))
         : null;
@@ -71,6 +103,7 @@ export class HttpRequest {
   }
 
   private decodePayload() {
+    if (!this.body) return this.body;
     if (this.isBrotli) return zlib.brotliDecompressSync(this.body);
     if (this.isGzip) return zlib.gunzipSync(this.body);
     throw HttpResponse.badRequest('can not decompress payload encoding');
@@ -83,5 +116,31 @@ export class HttpRequest {
   setPathParams(params = {}) {
     this.params = { ...(this.params ?? {}), ...params };
     return this;
+  }
+
+  static async fromServer(request: IncomingMessage) {
+    const body = await getRequestBody(request);
+    const { pathname } = new URL(request.url ?? '', 'http://localhost');
+    return new HttpRequest(
+      {
+        path: pathname,
+        method: request.method ?? 'GET',
+        headers: Object.fromEntries([...parseHeaders(request.headers)]),
+        body: body,
+      },
+      request
+    );
+  }
+
+  static fromLambda(event: APIGatewayProxyEvent | ALBEvent) {
+    return new HttpRequest(
+      {
+        path: event.path,
+        method: event.httpMethod,
+        headers: event.headers ?? {},
+        body: event.body,
+      },
+      event
+    );
   }
 }

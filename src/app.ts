@@ -1,4 +1,3 @@
-import { IncomingMessage, ServerResponse } from 'node:http';
 import { HttpRequest, HttpResponse } from './http';
 import {
   concatPaths,
@@ -7,7 +6,6 @@ import {
   StackHandler,
   StackLayer,
 } from './router';
-import { getRequestBody } from './utils/get-request-body';
 
 export namespace App {
   export interface Options {
@@ -15,8 +13,8 @@ export namespace App {
     prefix?: string;
   }
 
-  export interface Listener {
-    (req: IncomingMessage, res: ServerResponse): void;
+  export interface Handler {
+    (request: HttpRequest): Promise<HttpResponse>;
   }
 }
 
@@ -41,25 +39,15 @@ export class App {
     return this;
   }
 
-  async handle(input: {
-    path: string;
-    method: string;
-    headers: any;
-    body: Buffer | string | null;
-  }) {
+  async handle(request: HttpRequest) {
     try {
-      const route = this.router.match(input.method, input.path);
-      const request = new HttpRequest({
-        path: input.path,
-        method: input.method,
-        headers: input.headers,
-        body: input.body,
-      });
+      const route = this.router.match(request.method, request.path);
       for (const layer of route.stack) {
         const res = await layer.handle(request, this);
         if (res && res instanceof HttpResponse) return res;
       }
       const response = await route.handle(request, this);
+      if (request.acceptEncoding) response.compress(request.acceptEncoding);
       return response;
     } catch (error) {
       return this.parseError(error);
@@ -73,30 +61,7 @@ export class App {
   }
 }
 
-const createListener = (app: App) => {
-  return async (req: IncomingMessage, res: ServerResponse) => {
-    try {
-      const url = new URL(req.url ?? '/', 'http://localhost');
-      const result = await app.handle({
-        path: url.pathname,
-        method: req.method ?? 'GET',
-        headers: req.headers,
-        body: await getRequestBody(req),
-      });
-      const response = result.toJSON();
-      res.writeHead(response.statusCode, response.headers);
-      res.end(response.body);
-    } catch (error) {
-      const parsedError = app.parseError(error);
-      res.writeHead(parsedError.statusCode, parsedError.headers);
-      res.end(JSON.stringify(parsedError.body));
-    } finally {
-      if (res.socket) res.end();
-    }
-  };
-};
-
-const decorateHandler = (handler: App.Listener): App.Listener => {
+const decorateHandler = (handler: App.Handler): App.Handler => {
   for (const key of Reflect.ownKeys(App.prototype)) {
     const descriptor = Reflect.getOwnPropertyDescriptor(App.prototype, key);
     if (descriptor && typeof descriptor.value === 'function')
@@ -105,9 +70,12 @@ const decorateHandler = (handler: App.Listener): App.Listener => {
   return handler;
 };
 
-export default function (options: App | App.Options): App & App.Listener {
+export default function (options: App | App.Options): App & App.Handler {
   const app = options instanceof App ? options : new App(options);
-  const listener = createListener(app);
-  decorateHandler(listener);
-  return Object.assign(listener, app);
+  const handler = async (request: HttpRequest) => {
+    const response = await app.handle(request);
+    return response;
+  };
+  decorateHandler(handler);
+  return Object.assign(handler, app);
 }
